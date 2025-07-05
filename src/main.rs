@@ -8,16 +8,30 @@ use image::ImageDecoder;
 #[derive(Debug, Parser)]
 #[command(version)]
 struct Args {
+    /// Encoding distance.
+    ///
+    /// Corresponds to cjxl `-d`.
     #[arg(short, long, default_value_t = 1.0)]
     distance: f32,
+    /// Encoding effort.
+    ///
+    /// Corresponds to cjxl `-e`.
     #[arg(short, long, default_value_t = 7)]
     effort: u32,
+    /// Speed tier when decoding output image.
+    ///
+    /// Corresponds to cjxl `--faster_decoding`.
     #[arg(long, default_value_t = 0)]
     decoding_speed: u32,
+    /// Output file name.
+    ///
+    /// If not given, it will write nothing and work like cjxl `--disable_output`.
     #[arg(short, long)]
     output: Option<PathBuf>,
+    /// Whether to disable lossless JPEG transcoding and force encoding from pixels.
     #[arg(long)]
     force_from_pixels: bool,
+    /// Input file name.
     input: PathBuf,
 }
 
