@@ -44,6 +44,22 @@ impl EncoderFrame<'_> {
 
         Ok(self)
     }
+
+    pub fn jpeg(&mut self, buffer: &[u8]) -> Result<&mut Self> {
+        let Some(settings) = self.settings.take() else {
+            return Err(Error::ApiUsage);
+        };
+
+        let size = buffer.len();
+        let buffer_ptr = buffer.as_ptr();
+
+        unsafe {
+            let _ret = sys::JxlEncoderAddJPEGFrame(settings.as_ptr(), buffer_ptr, size);
+            Error::try_from_libjxl_encoder(self.encoder.encoder)?;
+        }
+
+        Ok(self)
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]

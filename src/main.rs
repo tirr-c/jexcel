@@ -4,9 +4,13 @@ use std::time::Instant;
 use image::ImageDecoder;
 
 fn main() {
-    let begin_setup = Instant::now();
+    let begin_read_image = Instant::now();
+    let input_buffer = std::fs::read("input.jpg").unwrap();
+    let duration_read_image = begin_read_image.elapsed();
+    println!("Reading input took {:.2} ms", duration_read_image.as_secs_f64() * 1000.);
 
-    let image = image::ImageReader::open("input.png").unwrap().with_guessed_format().unwrap();
+    let image = image::ImageReader::new(std::io::Cursor::new(&input_buffer)).with_guessed_format().unwrap();
+    let is_jpeg = image.format() == Some(image::ImageFormat::Jpeg);
     let mut image = image.into_decoder().unwrap();
 
     let icc = image.icc_profile().unwrap();
@@ -36,20 +40,6 @@ fn main() {
 
     let mut encoder = jexcel::JxlEncoder::new().unwrap();
 
-    let mut basic_info = jexcel::BasicInfo::new();
-    basic_info.xsize = width;
-    basic_info.ysize = height;
-    basic_info.bits_per_sample = bits_per_sample;
-    basic_info.uses_original_profile = 1;
-    encoder.set_basic_info(&basic_info).unwrap();
-
-    if let Some(icc) = icc {
-        encoder.set_icc_profile(&icc).unwrap();
-    } else {
-        let color_encoding = jexcel::ColorEncoding::srgb(jexcel::RenderingIntent::Relative);
-        encoder.set_color_encoding(&color_encoding).unwrap();
-    }
-
     let settings = encoder.create_frame_settings_with(|settings| {
         // d0e3
         settings
@@ -58,21 +48,50 @@ fn main() {
         Ok(())
     }).unwrap();
 
-    let duration_setup = begin_setup.elapsed();
-    println!("Encoder setup took {:.2} ms", duration_setup.as_secs_f64() * 1000.);
+    let mut transcoding_ok = false;
+    let mut begin_encode = Instant::now();
+    if is_jpeg {
+        println!("Trying to transcode...");
 
-    let begin_read_image = Instant::now();
-    let mut buffer = vec![0u8; image.total_bytes() as usize];
-    image.read_image(&mut buffer).unwrap();
-    let duration_read_image = begin_read_image.elapsed();
-    println!("Decoding input took {:.2} ms", duration_read_image.as_secs_f64() * 1000.);
+        begin_encode = Instant::now();
+        let mut frame = encoder.add_frame(settings).unwrap();
+        let jpeg_result = frame.jpeg(&input_buffer);
 
-    let begin_encode = Instant::now();
-    encoder
-        .add_frame(settings)
-        .unwrap()
-        .color_channels(num_channels, sample_format, &buffer)
-        .unwrap();
+        if let Err(err) = jpeg_result {
+            println!("Transcoding failed ({err})");
+        } else {
+            transcoding_ok = true;
+        }
+    }
+
+    if !transcoding_ok {
+        let mut basic_info = jexcel::BasicInfo::new();
+        basic_info.xsize = width;
+        basic_info.ysize = height;
+        basic_info.bits_per_sample = bits_per_sample;
+        basic_info.uses_original_profile = 1;
+        encoder.set_basic_info(&basic_info).unwrap();
+
+        if let Some(icc) = icc {
+            encoder.set_icc_profile(&icc).unwrap();
+        } else {
+            let color_encoding = jexcel::ColorEncoding::srgb(jexcel::RenderingIntent::Relative);
+            encoder.set_color_encoding(&color_encoding).unwrap();
+        }
+
+        let begin_decode_image = Instant::now();
+        let mut buffer = vec![0u8; image.total_bytes() as usize];
+        image.read_image(&mut buffer).unwrap();
+        let duration_decode_image = begin_decode_image.elapsed();
+        println!("Decoding input took {:.2} ms", duration_decode_image.as_secs_f64() * 1000.);
+
+        begin_encode = Instant::now();
+        encoder
+            .add_frame(settings)
+            .unwrap()
+            .color_channels(num_channels, sample_format, &buffer)
+            .unwrap();
+    }
 
     encoder.close_input();
 

@@ -68,4 +68,3 @@ unsafe fn run_inner(
 
     sys::JXL_PARALLEL_RET_SUCCESS as sys::JxlParallelRetCode
 }
-
