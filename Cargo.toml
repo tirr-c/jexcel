@@ -1,5 +1,11 @@
 [package]
 name = "jexcel"
+description = "An alternative libjxl frontend"
+authors = ["Wonwoo Choi <chwo9843@gmail.com>"]
+keywords = ["jpeg-xl", "encoder", "libjxl"]
+categories = ["multimedia::images"]
+license = "MIT"
+
 version = "0.1.0"
 edition = "2024"
 
