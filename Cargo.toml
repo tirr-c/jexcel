@@ -8,6 +8,10 @@ bytemuck = "1.23.1"
 rayon = "1.10.0"
 thiserror = "2.0.12"
 
+[dependencies.clap]
+version = "4.5.40"
+features = ["derive"]
+
 [dependencies.image]
 version = "0.25.6"
 features = []

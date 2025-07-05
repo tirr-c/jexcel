@@ -1,11 +1,27 @@
 use std::io::prelude::*;
+use std::path::PathBuf;
 use std::time::Instant;
 
+use clap::Parser;
 use image::ImageDecoder;
 
+#[derive(Debug, Parser)]
+#[command(version)]
+struct Args {
+    #[arg(short, long, default_value_t = 1.0)]
+    distance: f32,
+    #[arg(short, long, default_value_t = 7)]
+    effort: u32,
+    input: PathBuf,
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
 fn main() {
+    let args = Args::parse();
+
     let begin_read_image = Instant::now();
-    let input_buffer = std::fs::read("input.jpg").unwrap();
+    let input_buffer = std::fs::read(args.input).unwrap();
     let duration_read_image = begin_read_image.elapsed();
     println!("Reading input took {:.2} ms", duration_read_image.as_secs_f64() * 1000.);
 
@@ -43,8 +59,8 @@ fn main() {
     let settings = encoder.create_frame_settings_with(|settings| {
         // d0e3
         settings
-            .distance(0.0)?
-            .effort(jexcel::Effort::try_from(3i64)?);
+            .distance(args.distance)?
+            .effort(jexcel::Effort::try_from(args.effort as i64)?);
         Ok(())
     }).unwrap();
 
@@ -95,11 +111,14 @@ fn main() {
 
     encoder.close_input();
 
-    let mut output = std::fs::File::create("output.jxl").unwrap();
     let mut buffer = vec![0u8; 4096];
+    let mut output = args.output.map(|output| std::fs::File::create(output).unwrap());
+
     loop {
         let ret = encoder.pull_outputs(&mut buffer).unwrap();
-        output.write_all(&buffer[..ret.bytes_written()]).unwrap();
+        if let Some(output) = &mut output {
+            output.write_all(&buffer[..ret.bytes_written()]).unwrap();
+        }
         if !ret.need_more_output() {
             break;
         }
