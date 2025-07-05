@@ -135,6 +135,14 @@ impl FrameSettings<'_> {
 
         Ok(self)
     }
+
+    pub fn decoding_speed(&mut self, speed: u32) -> Result<&mut Self> {
+        self.set_raw_i64(
+            sys::JxlEncoderFrameSettingId_JXL_ENC_FRAME_SETTING_DECODING_SPEED,
+            speed as i64,
+        )?;
+        Ok(self)
+    }
 }
 
 #[derive(Debug)]

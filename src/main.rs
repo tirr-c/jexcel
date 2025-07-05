@@ -12,9 +12,13 @@ struct Args {
     distance: f32,
     #[arg(short, long, default_value_t = 7)]
     effort: u32,
-    input: PathBuf,
+    #[arg(long, default_value_t = 0)]
+    decoding_speed: u32,
     #[arg(short, long)]
     output: Option<PathBuf>,
+    #[arg(long)]
+    force_from_pixels: bool,
+    input: PathBuf,
 }
 
 fn main() {
@@ -62,17 +66,17 @@ fn main() {
 
     let settings = encoder
         .create_frame_settings_with(|settings| {
-            // d0e3
             settings
                 .distance(args.distance)?
-                .effort(jexcel::Effort::try_from(args.effort as i64)?);
+                .effort(jexcel::Effort::try_from(args.effort as i64)?)
+                .decoding_speed(args.decoding_speed)?;
             Ok(())
         })
         .unwrap();
 
     let mut transcoding_ok = false;
     let mut begin_encode = Instant::now();
-    if is_jpeg {
+    if is_jpeg && !args.force_from_pixels {
         println!("Trying to transcode...");
 
         begin_encode = Instant::now();
