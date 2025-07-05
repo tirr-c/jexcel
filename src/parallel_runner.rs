@@ -63,7 +63,11 @@ unsafe fn run_inner(
 
     range.into_par_iter().for_each(|idx| unsafe {
         let func = func.into_inner();
-        func(jxl_opaque.into_inner(), idx, rayon::current_thread_index().unwrap());
+        func(
+            jxl_opaque.into_inner(),
+            idx,
+            rayon::current_thread_index().unwrap(),
+        );
     });
 
     sys::JXL_PARALLEL_RET_SUCCESS as sys::JxlParallelRetCode

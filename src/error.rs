@@ -19,7 +19,9 @@ pub enum Error {
 }
 
 impl Error {
-    pub(crate) unsafe fn try_from_libjxl_encoder(encoder: NonNull<sys::JxlEncoder>) -> Result<(), Self> {
+    pub(crate) unsafe fn try_from_libjxl_encoder(
+        encoder: NonNull<sys::JxlEncoder>,
+    ) -> Result<(), Self> {
         unsafe {
             let error = sys::JxlEncoderGetError(encoder.as_ptr());
             Err(match error {

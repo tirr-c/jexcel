@@ -10,14 +10,25 @@ pub struct EncoderFrame<'encoder> {
 }
 
 impl<'encoder> EncoderFrame<'encoder> {
-    pub(crate) fn new(encoder: &'encoder mut JxlEncoder, settings_key: FrameSettingsKey) -> Result<Self> {
+    pub(crate) fn new(
+        encoder: &'encoder mut JxlEncoder,
+        settings_key: FrameSettingsKey,
+    ) -> Result<Self> {
         let settings = settings_key.try_index_raw(encoder)?;
-        Ok(Self { encoder, settings: Some(settings) })
+        Ok(Self {
+            encoder,
+            settings: Some(settings),
+        })
     }
 }
 
 impl EncoderFrame<'_> {
-    pub fn color_channels(&mut self, num_channels: u32, sample_format: SampleFormat, buffer: &[u8]) -> Result<&mut Self> {
+    pub fn color_channels(
+        &mut self,
+        num_channels: u32,
+        sample_format: SampleFormat,
+        buffer: &[u8],
+    ) -> Result<&mut Self> {
         let Some(settings) = self.settings.take() else {
             return Err(Error::ApiUsage);
         };
@@ -38,7 +49,12 @@ impl EncoderFrame<'_> {
         };
 
         unsafe {
-            let _ret = sys::JxlEncoderAddImageFrame(settings.as_ptr(), &pixel_format, buffer_ptr as *const _, size);
+            let _ret = sys::JxlEncoderAddImageFrame(
+                settings.as_ptr(),
+                &pixel_format,
+                buffer_ptr as *const _,
+                size,
+            );
             Error::try_from_libjxl_encoder(self.encoder.encoder)?;
         }
 

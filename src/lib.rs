@@ -6,13 +6,13 @@ mod encoder_frame;
 pub mod encoder_state;
 mod error;
 mod frame_settings;
-pub mod sys;
 mod parallel_runner;
+pub mod sys;
 
-pub use sys::JxlBasicInfo as BasicInfoData;
 pub use encoder_frame::*;
 pub use error::{Error, Result};
 pub use frame_settings::*;
+pub use sys::JxlBasicInfo as BasicInfoData;
 
 #[derive(Debug)]
 pub struct BasicInfo(BasicInfoData);
@@ -112,7 +112,11 @@ impl JxlEncoder {
     pub fn new() -> Option<Self> {
         unsafe {
             let encoder = sys::JxlEncoderCreate(std::ptr::null_mut());
-            sys::JxlEncoderSetParallelRunner(encoder, Some(parallel_runner::rayon_parallel_runner), std::ptr::null_mut());
+            sys::JxlEncoderSetParallelRunner(
+                encoder,
+                Some(parallel_runner::rayon_parallel_runner),
+                std::ptr::null_mut(),
+            );
             let encoder = NonNull::new(encoder)?;
             Some(Self {
                 encoder,
@@ -193,14 +197,21 @@ impl JxlEncoder {
     pub fn pull_outputs(&mut self, buffer: &mut [u8]) -> Result<OutputStatus> {
         let mut bytes_avail = buffer.len();
         if bytes_avail < 32 {
-            return Ok(OutputStatus { bytes_written: 0, need_more_output: true });
+            return Ok(OutputStatus {
+                bytes_written: 0,
+                need_more_output: true,
+            });
         }
 
         let mut buffer_ptr = buffer.as_mut_ptr();
         let mut need_more_output = true;
         unsafe {
             while bytes_avail >= 32 {
-                let ret = sys::JxlEncoderProcessOutput(self.encoder.as_ptr(), &mut buffer_ptr, &mut bytes_avail);
+                let ret = sys::JxlEncoderProcessOutput(
+                    self.encoder.as_ptr(),
+                    &mut buffer_ptr,
+                    &mut bytes_avail,
+                );
                 if ret == sys::JxlEncoderStatus_JXL_ENC_SUCCESS {
                     need_more_output = false;
                     break;

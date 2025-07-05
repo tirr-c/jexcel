@@ -17,7 +17,9 @@ fn main() {
         .generate()
         .expect("failed to generate bindings");
 
-    bindings.write_to_file(out_path.join("bindings.rs")).expect("failed to write bindings");
+    bindings
+        .write_to_file(out_path.join("bindings.rs"))
+        .expect("failed to write bindings");
 
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-changed=wrapper.h");

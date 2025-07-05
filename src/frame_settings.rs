@@ -21,13 +21,15 @@ impl FrameSettingsKey {
             return Err(Error::Unknown);
         }
 
-        let settings = unsafe {
-            FrameSettings::from_raw(encoder.encoder, encoder.frame_settings[self.1])
-        };
+        let settings =
+            unsafe { FrameSettings::from_raw(encoder.encoder, encoder.frame_settings[self.1]) };
         Ok(settings)
     }
 
-    pub(crate) fn try_index_raw(self, encoder: &mut JxlEncoder) -> Result<NonNull<sys::JxlEncoderFrameSettings>> {
+    pub(crate) fn try_index_raw(
+        self,
+        encoder: &mut JxlEncoder,
+    ) -> Result<NonNull<sys::JxlEncoderFrameSettings>> {
         if !self.is_for_encoder(encoder) {
             return Err(Error::Unknown);
         }
@@ -97,7 +99,8 @@ impl FrameSettings<'_> {
     #[expect(unused)]
     fn set_raw_f32(&mut self, option: sys::JxlEncoderFrameSettingId, value: f32) -> Result<()> {
         unsafe {
-            let _ret = sys::JxlEncoderFrameSettingsSetFloatOption(self.settings.as_ptr(), option, value);
+            let _ret =
+                sys::JxlEncoderFrameSettingsSetFloatOption(self.settings.as_ptr(), option, value);
             Error::try_from_libjxl_encoder(self.encoder)
         }
     }
@@ -111,8 +114,11 @@ impl FrameSettings<'_> {
     }
 
     pub fn effort(&mut self, effort: Effort) -> &mut Self {
-        self.set_raw_i64(sys::JxlEncoderFrameSettingId_JXL_ENC_FRAME_SETTING_EFFORT, effort as i64)
-            .unwrap();
+        self.set_raw_i64(
+            sys::JxlEncoderFrameSettingId_JXL_ENC_FRAME_SETTING_EFFORT,
+            effort as i64,
+        )
+        .unwrap();
         self
     }
 
@@ -187,9 +193,7 @@ impl TryFrom<i64> for Effort {
     fn try_from(value: i64) -> Result<Self> {
         if (1..=11).contains(&value) {
             // SAFETY: Effort has repr of i64, with valid range of 1..=11.
-            let value = unsafe {
-                std::mem::transmute::<i64, Self>(value)
-            };
+            let value = unsafe { std::mem::transmute::<i64, Self>(value) };
             Ok(value)
         } else {
             Err(Error::ApiUsage)
