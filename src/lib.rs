@@ -2,12 +2,15 @@ use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
+mod encoder_frame;
+pub mod encoder_state;
 mod error;
 mod frame_settings;
 pub mod sys;
 mod parallel_runner;
 
 pub use sys::JxlBasicInfo as BasicInfoData;
+pub use encoder_frame::*;
 pub use error::{Error, Result};
 pub use frame_settings::*;
 
@@ -102,6 +105,7 @@ impl From<RenderingIntent> for sys::JxlRenderingIntent {
 pub struct JxlEncoder {
     encoder: NonNull<sys::JxlEncoder>,
     frame_settings: Vec<NonNull<sys::JxlEncoderFrameSettings>>,
+    close_state: CloseState,
 }
 
 impl JxlEncoder {
@@ -113,6 +117,7 @@ impl JxlEncoder {
             Some(Self {
                 encoder,
                 frame_settings: Vec::new(),
+                close_state: CloseState::Open,
             })
         }
     }
@@ -127,6 +132,13 @@ impl JxlEncoder {
     pub fn set_color_encoding(&mut self, color_encoding: &ColorEncoding) -> Result<()> {
         unsafe {
             let _ret = sys::JxlEncoderSetColorEncoding(self.encoder.as_ptr(), &color_encoding.0);
+            Error::try_from_libjxl_encoder(self.encoder)
+        }
+    }
+
+    pub fn set_icc_profile(&mut self, icc: &[u8]) -> Result<()> {
+        unsafe {
+            let _ret = sys::JxlEncoderSetICCProfile(self.encoder.as_ptr(), icc.as_ptr(), icc.len());
             Error::try_from_libjxl_encoder(self.encoder)
         }
     }
@@ -159,6 +171,53 @@ impl JxlEncoder {
         f(&mut settings)?;
         Ok(())
     }
+
+    pub fn add_frame(&mut self, settings_key: FrameSettingsKey) -> Result<EncoderFrame> {
+        EncoderFrame::new(self, settings_key)
+    }
+
+    pub fn close_frames(&mut self) {
+        unsafe {
+            sys::JxlEncoderCloseFrames(self.encoder.as_ptr());
+            self.close_state = CloseState::FramesClosed;
+        }
+    }
+
+    pub fn close_input(&mut self) {
+        unsafe {
+            sys::JxlEncoderCloseInput(self.encoder.as_ptr());
+            self.close_state = CloseState::InputClosed;
+        }
+    }
+
+    pub fn pull_outputs(&mut self, buffer: &mut [u8]) -> Result<OutputStatus> {
+        let mut bytes_avail = buffer.len();
+        if bytes_avail < 32 {
+            return Ok(OutputStatus { bytes_written: 0, need_more_output: true });
+        }
+
+        let mut buffer_ptr = buffer.as_mut_ptr();
+        let mut need_more_output = true;
+        unsafe {
+            while bytes_avail >= 32 {
+                let ret = sys::JxlEncoderProcessOutput(self.encoder.as_ptr(), &mut buffer_ptr, &mut bytes_avail);
+                if ret == sys::JxlEncoderStatus_JXL_ENC_SUCCESS {
+                    need_more_output = false;
+                    break;
+                }
+                if ret == sys::JxlEncoderStatus_JXL_ENC_ERROR {
+                    Error::try_from_libjxl_encoder(self.encoder)?;
+                    // Fallback error code
+                    return Err(Error::BadInput);
+                }
+            }
+        }
+
+        Ok(OutputStatus {
+            bytes_written: buffer.len() - bytes_avail,
+            need_more_output,
+        })
+    }
 }
 
 impl Drop for JxlEncoder {
@@ -167,5 +226,28 @@ impl Drop for JxlEncoder {
             // Will drop all frame settings.
             sys::JxlEncoderDestroy(self.encoder.as_ptr());
         }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum CloseState {
+    Open,
+    FramesClosed,
+    InputClosed,
+}
+
+#[derive(Debug)]
+pub struct OutputStatus {
+    bytes_written: usize,
+    need_more_output: bool,
+}
+
+impl OutputStatus {
+    pub fn bytes_written(&self) -> usize {
+        self.bytes_written
+    }
+
+    pub fn need_more_output(&self) -> bool {
+        self.need_more_output
     }
 }

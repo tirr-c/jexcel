@@ -16,7 +16,7 @@ impl FrameSettingsKey {
         self.0 == encoder.encoder
     }
 
-    pub(crate) fn try_index<'encoder>(self, encoder: &'encoder mut JxlEncoder) -> Result<FrameSettings<'encoder>> {
+    pub(crate) fn try_index(self, encoder: &mut JxlEncoder) -> Result<FrameSettings> {
         if !self.is_for_encoder(encoder) {
             return Err(Error::Unknown);
         }
@@ -25,6 +25,14 @@ impl FrameSettingsKey {
             FrameSettings::from_raw(encoder.encoder, encoder.frame_settings[self.1])
         };
         Ok(settings)
+    }
+
+    pub(crate) fn try_index_raw(self, encoder: &mut JxlEncoder) -> Result<NonNull<sys::JxlEncoderFrameSettings>> {
+        if !self.is_for_encoder(encoder) {
+            return Err(Error::Unknown);
+        }
+
+        Ok(encoder.frame_settings[self.1])
     }
 }
 
