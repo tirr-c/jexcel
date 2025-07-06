@@ -8,7 +8,7 @@ use image::ImageDecoder;
 #[derive(Debug, Parser)]
 #[command(version)]
 struct Args {
-    /// Encoding distance.
+    /// Encoding distance. Value of 0 triggers lossless encoding.
     ///
     /// Corresponds to cjxl `-d`.
     #[arg(short, long, default_value_t = 1.0)]
@@ -16,12 +16,12 @@ struct Args {
     /// Encoding effort.
     ///
     /// Corresponds to cjxl `-e`.
-    #[arg(short, long, default_value_t = 7)]
-    effort: u32,
+    #[arg(short, long, value_parser = 1..=10, default_value_t = 7)]
+    effort: i64,
     /// Speed tier when decoding output image.
     ///
     /// Corresponds to cjxl `--faster_decoding`.
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, value_parser = clap::value_parser!(u32).range(0..=4), default_value_t = 0)]
     decoding_speed: u32,
     /// Output file name.
     ///
@@ -36,7 +36,12 @@ struct Args {
 }
 
 fn main() {
-    let args = Args::parse();
+    let mut args = Args::parse();
+    let is_lossless = args.distance < 0.01;
+    let effort = jexcel::Effort::try_from(args.effort).unwrap();
+    if is_lossless {
+        args.distance = 0.;
+    }
 
     let begin_read_image = Instant::now();
     let input_buffer = std::fs::read(args.input).unwrap();
@@ -49,7 +54,9 @@ fn main() {
     let image = image::ImageReader::new(std::io::Cursor::new(&input_buffer))
         .with_guessed_format()
         .unwrap();
+    let format = image.format();
     let is_jpeg = image.format() == Some(image::ImageFormat::Jpeg);
+    let do_transcode = is_jpeg && !args.force_from_pixels;
     let mut image = image.into_decoder().unwrap();
 
     let icc = image.icc_profile().unwrap();
@@ -76,13 +83,39 @@ fn main() {
         color_type.bits_per_pixel() as u32 / color_type.channel_count() as u32
     };
 
+    print!(
+        "Input: {:?}, {width} x {height}, {bits_per_sample} bpc",
+        format.unwrap()
+    );
+    if icc.is_some() {
+        print!(", has ICC profile");
+    }
+    println!();
+
+    print!("Encoding params: ");
+    if do_transcode {
+        print!("lossless JPEG transcode");
+    } else if is_lossless {
+        print!("lossless");
+    } else {
+        print!("lossy, distance: {}", args.distance);
+    }
+    print!(", effort: {} ({effort:?})", effort as i64);
+    if args.decoding_speed > 0 {
+        print!(", decoding speed: {}", args.decoding_speed);
+    }
+    if args.output.is_none() {
+        print!(", no output");
+    }
+    println!();
+
     let mut encoder = jexcel::JxlEncoder::new().unwrap();
 
     let settings = encoder
         .create_frame_settings_with(|settings| {
             settings
                 .distance(args.distance)?
-                .effort(jexcel::Effort::try_from(args.effort as i64)?)
+                .effort(effort)
                 .decoding_speed(args.decoding_speed)?;
             Ok(())
         })
@@ -90,7 +123,7 @@ fn main() {
 
     let mut transcoding_ok = false;
     let mut begin_encode = Instant::now();
-    if is_jpeg && !args.force_from_pixels {
+    if do_transcode {
         println!("Trying to transcode...");
 
         begin_encode = Instant::now();
@@ -109,7 +142,7 @@ fn main() {
         basic_info.xsize = width;
         basic_info.ysize = height;
         basic_info.bits_per_sample = bits_per_sample;
-        basic_info.uses_original_profile = 1;
+        basic_info.uses_original_profile = is_lossless as i32;
         encoder.set_basic_info(&basic_info).unwrap();
 
         if let Some(icc) = icc {
@@ -154,8 +187,10 @@ fn main() {
     }
 
     let duration_encode = begin_encode.elapsed();
+    let pixels = width as u64 * height as u64;
+    let throughput_mp = pixels as f64 / (duration_encode.as_secs_f64() * 1_000_000.);
     println!(
-        "Encoding and output took {:.2} ms",
+        "Encoding and output took {:.2} ms ({throughput_mp:.3} MP/s)",
         duration_encode.as_secs_f64() * 1000.
     );
 }

@@ -66,7 +66,7 @@ unsafe fn run_inner(
         func(
             jxl_opaque.into_inner(),
             idx,
-            rayon::current_thread_index().unwrap(),
+            rayon::current_thread_index().unwrap_or(0),
         );
     });
 
