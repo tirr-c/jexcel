@@ -3,7 +3,6 @@ use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
 mod encoder_frame;
-pub mod encoder_state;
 mod error;
 mod frame_settings;
 mod parallel_runner;
