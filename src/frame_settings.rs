@@ -184,6 +184,16 @@ impl FrameSettings<'_> {
         self
     }
 
+    pub fn modular(&mut self, modular: Option<bool>) -> &mut Self {
+        let modular = modular.map(|x| x as i64).unwrap_or(-1);
+        self.set_raw_i64(
+            sys::JxlEncoderFrameSettingId_JXL_ENC_FRAME_SETTING_MODULAR,
+            modular,
+        )
+        .unwrap();
+        self
+    }
+
     pub fn decoding_speed(&mut self, speed: u32) -> Result<&mut Self> {
         self.set_raw_i64(
             sys::JxlEncoderFrameSettingId_JXL_ENC_FRAME_SETTING_DECODING_SPEED,

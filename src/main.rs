@@ -11,8 +11,8 @@ struct Args {
     /// Encoding distance. Value of 0 triggers lossless encoding.
     ///
     /// Corresponds to cjxl `-d`.
-    #[arg(short, long, default_value_t = 1.0)]
-    distance: f32,
+    #[arg(short, long)]
+    distance: Option<f32>,
     /// Encoding effort.
     ///
     /// Corresponds to cjxl `-e`.
@@ -28,6 +28,11 @@ struct Args {
     /// Corresponds to cjxl `--faster_decoding`.
     #[arg(long, value_parser = clap::value_parser!(u32).range(0..=4), default_value_t = 0)]
     decoding_speed: u32,
+    /// Forces Modular frame.
+    ///
+    /// This will encode lossy Modular image when used with positive distance settings.
+    #[arg(short = 'm', long)]
+    force_modular: bool,
     /// Output file name.
     ///
     /// If not given, it will write nothing and work like cjxl `--disable_output`.
@@ -41,12 +46,16 @@ struct Args {
 }
 
 fn main() {
-    let mut args = Args::parse();
-    let is_lossless = args.distance < 0.01;
+    let args = Args::parse();
+    let mut distance = args
+        .distance
+        .unwrap_or(if args.force_modular { 0. } else { 1. });
+    let is_lossless = distance < 0.01;
     let effort = jexcel::Effort::try_from(args.effort).unwrap();
     if is_lossless {
-        args.distance = 0.;
+        distance = 0.;
     }
+    let is_modular = is_lossless || args.force_modular;
 
     let begin_read_image = Instant::now();
     let input_buffer = std::fs::read(args.input).unwrap();
@@ -94,7 +103,7 @@ fn main() {
     let mut progressive_hf_q = None;
 
     if !do_transcode && args.progressive > 0 {
-        if is_lossless {
+        if is_modular {
             modular_responsive = Some(true);
         } else {
             lf_frames = Some(if args.progressive >= 4 { 2u32 } else { 1u32 });
@@ -124,7 +133,10 @@ fn main() {
     } else if is_lossless {
         print!("lossless");
     } else {
-        print!("lossy, distance: {}", args.distance);
+        print!(
+            "lossy{}, distance: {distance}",
+            if is_modular { " Modular" } else { "" },
+        );
     }
     print!(", effort: {} ({effort:?})", effort as i64);
     if args.decoding_speed > 0 {
@@ -137,7 +149,7 @@ fn main() {
 
     if args.progressive > 0 {
         print!("Progressiveness: ");
-        if is_lossless {
+        if is_modular {
             print!("enabled");
         } else {
             if args.progressive >= 4 {
@@ -160,12 +172,13 @@ fn main() {
     let settings = encoder
         .create_frame_settings_with(|settings| {
             settings
-                .distance(args.distance)?
+                .distance(distance)?
                 .effort(effort)
                 .modular_progressive(modular_responsive)
                 .vardct_progressive_lf(lf_frames)?
                 .vardct_progressive_hf(progressive_hf)
                 .vardct_progressive_hf_quant(progressive_hf_q)
+                .modular(if is_modular { Some(true) } else { None })
                 .decoding_speed(args.decoding_speed)?;
             Ok(())
         })
