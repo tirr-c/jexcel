@@ -13,12 +13,12 @@ jobs:
         os:
           - ubuntu-24.04
           - ubuntu-24.04-arm
-          - windows-2022
+          - windows-2025
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: 'true'
+          submodules: 'recursive'
       - uses: dtolnay/rust-toolchain@stable
         id: toolchain
       - uses: actions/cache@v4
