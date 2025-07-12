@@ -1,0 +1,45 @@
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+name: Build
+
+jobs:
+  build:
+    name: Compile
+    strategy:
+      matrix:
+        os:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - windows-2022
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'true'
+      - uses: dtolnay/rust-toolchain@stable
+        id: toolchain
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-dot-cargo-${{ steps.toolchain.outputs.cacheKey }}-${{ hashFiles('**/Cargo.lock', '.git/modules/libjxl/HEAD') }}
+          restore-keys: |
+            ${{ runner.os }}-dot-cargo-${{ steps.toolchain.outputs.cacheKey }}-
+            ${{ runner.os }}-dot-cargo-
+      - name: Detect host triple
+        id: detect-host
+        shell: bash
+        run: |
+          rustc -vV | sed -ne 's/^host: /host=/p' >> "$GITHUB_OUTPUT"
+      - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jexcel-${{ steps.detect-host.outputs.host }}
+          path: |
+            target/release/jexcel
+            target/release/jexcel.exe
