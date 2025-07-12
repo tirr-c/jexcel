@@ -18,6 +18,11 @@ struct Args {
     /// Corresponds to cjxl `-e`.
     #[arg(short, long, value_parser = 1..=10, default_value_t = 7)]
     effort: i64,
+    /// Encode progressive image.
+    ///
+    /// Progressiveness increases when given multiple times.
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    progressive: u8,
     /// Speed tier when decoding output image.
     ///
     /// Corresponds to cjxl `--faster_decoding`.
@@ -83,6 +88,27 @@ fn main() {
         color_type.bits_per_pixel() as u32 / color_type.channel_count() as u32
     };
 
+    let mut modular_responsive = None;
+    let mut lf_frames = None;
+    let mut progressive_hf = None;
+    let mut progressive_hf_q = None;
+
+    if !do_transcode && args.progressive > 0 {
+        if is_lossless {
+            modular_responsive = Some(true);
+        } else {
+            lf_frames = Some(if args.progressive >= 4 { 2u32 } else { 1u32 });
+
+            if args.progressive >= 2 {
+                progressive_hf_q = Some(true);
+            }
+
+            if args.progressive >= 3 {
+                progressive_hf = Some(true);
+            }
+        }
+    }
+
     print!(
         "Input: {:?}, {width} x {height}, {bits_per_sample} bpc",
         format.unwrap()
@@ -109,6 +135,26 @@ fn main() {
     }
     println!();
 
+    if args.progressive > 0 {
+        print!("Progressiveness: ");
+        if is_lossless {
+            print!("enabled");
+        } else {
+            if args.progressive >= 4 {
+                print!("2 LF frames");
+            } else if args.progressive >= 1 {
+                print!("1 LF frame");
+            }
+            if args.progressive >= 2 {
+                print!(", multiple HF quantization passes");
+            }
+            if args.progressive >= 3 {
+                print!(", spectral HF progression");
+            }
+        }
+        println!();
+    }
+
     let mut encoder = jexcel::JxlEncoder::new().unwrap();
 
     let settings = encoder
@@ -116,6 +162,10 @@ fn main() {
             settings
                 .distance(args.distance)?
                 .effort(effort)
+                .modular_progressive(modular_responsive)
+                .vardct_progressive_lf(lf_frames)?
+                .vardct_progressive_hf(progressive_hf)
+                .vardct_progressive_hf_quant(progressive_hf_q)
                 .decoding_speed(args.decoding_speed)?;
             Ok(())
         })

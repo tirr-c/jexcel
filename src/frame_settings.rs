@@ -136,6 +136,54 @@ impl FrameSettings<'_> {
         Ok(self)
     }
 
+    pub fn modular_progressive(&mut self, progressive: Option<bool>) -> &mut Self {
+        let progressive = progressive.map(|x| x as i64).unwrap_or(-1);
+        self.set_raw_i64(
+            sys::JxlEncoderFrameSettingId_JXL_ENC_FRAME_SETTING_RESPONSIVE,
+            progressive,
+        )
+        .unwrap();
+        self
+    }
+
+    pub fn vardct_progressive_lf(&mut self, lf_level: Option<u32>) -> Result<&mut Self> {
+        let lf_level = if let Some(lf_level) = lf_level {
+            if !(0..=2).contains(&lf_level) {
+                return Err(Error::ApiUsage);
+            }
+            lf_level as i64
+        } else {
+            -1i64
+        };
+
+        self.set_raw_i64(
+            sys::JxlEncoderFrameSettingId_JXL_ENC_FRAME_SETTING_PROGRESSIVE_DC,
+            lf_level,
+        )?;
+
+        Ok(self)
+    }
+
+    pub fn vardct_progressive_hf(&mut self, progressive: Option<bool>) -> &mut Self {
+        let progressive = progressive.map(|x| x as i64).unwrap_or(-1);
+        self.set_raw_i64(
+            sys::JxlEncoderFrameSettingId_JXL_ENC_FRAME_SETTING_PROGRESSIVE_AC,
+            progressive,
+        )
+        .unwrap();
+        self
+    }
+
+    pub fn vardct_progressive_hf_quant(&mut self, progressive: Option<bool>) -> &mut Self {
+        let progressive = progressive.map(|x| x as i64).unwrap_or(-1);
+        self.set_raw_i64(
+            sys::JxlEncoderFrameSettingId_JXL_ENC_FRAME_SETTING_QPROGRESSIVE_AC,
+            progressive,
+        )
+        .unwrap();
+        self
+    }
+
     pub fn decoding_speed(&mut self, speed: u32) -> Result<&mut Self> {
         self.set_raw_i64(
             sys::JxlEncoderFrameSettingId_JXL_ENC_FRAME_SETTING_DECODING_SPEED,

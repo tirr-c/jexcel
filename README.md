@@ -7,3 +7,4 @@ An alternative CLI frontend of libjxl.
 - Encoding
   - Lossless Modular, Lossy VarDCT
   - Lossless JPEG transcoding
+  - Progressiveness
