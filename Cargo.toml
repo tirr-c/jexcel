@@ -11,8 +11,11 @@ edition = "2024"
 
 [dependencies]
 bytemuck = "1.23.1"
+eyre = "0.6.12"
+globset = "0.4.16"
 rayon = "1.10.0"
 thiserror = "2.0.12"
+walkdir = "2.5.0"
 
 [dependencies.clap]
 version = "4.5.40"
@@ -20,6 +23,10 @@ features = ["derive"]
 
 [dependencies.image]
 version = "0.25.6"
+features = []
+
+[dependencies.indicatif]
+version = "0.18.0"
 features = []
 
 [build-dependencies]
