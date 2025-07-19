@@ -1,10 +1,14 @@
+use std::io::IsTerminal;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
+use crossterm::ExecutableCommand;
 use eyre::{Context, OptionExt};
 use image::ImageDecoder;
+use indicatif::{ProgressState, ProgressStyle};
+use tracing_indicatif::span_ext::IndicatifSpanExt as _;
 
 #[derive(Debug, Parser)]
 #[command(version)]
@@ -63,18 +67,53 @@ struct EncodingStats {
     duration_output: Duration,
 }
 
+fn init_subscriber(_args: &Args) {
+    use tracing_subscriber::prelude::*;
+
+    let mut stderr = std::io::stderr();
+    let is_terminal = stderr.is_terminal();
+    if is_terminal {
+        stderr.execute(crossterm::style::ResetColor).ok();
+    }
+
+    let style = ProgressStyle::with_template("{span_child_prefix}{spinner} {wide_msg} {elapsed}")
+        .unwrap()
+        .with_key(
+            "elapsed",
+            |state: &ProgressState, writer: &mut dyn std::fmt::Write| {
+                let elapsed = state.elapsed();
+                let seconds = elapsed.as_secs();
+                let subsecs = elapsed.subsec_millis() / 100;
+                write!(writer, "{seconds}.{subsecs}s").ok();
+            },
+        );
+    let indicatif_layer = tracing_indicatif::IndicatifLayer::new().with_progress_style(style);
+    let fmt_layer =
+        tracing_subscriber::fmt::layer().with_writer(indicatif_layer.get_stderr_writer());
+
+    tracing_subscriber::registry()
+        .with(fmt_layer)
+        .with(indicatif_layer)
+        .init();
+}
+
 fn main() {
     let args = Args::parse();
+    init_subscriber(&args);
 
     let stats = encode_single(&args.input, args.output.as_deref(), &args).unwrap();
 
     let (width, height) = stats.image_dimension;
-    println!(
+    tracing::info!(
         "Input: {:?}, {} x {}, {} bpc, {} bytes",
-        stats.input_format, width, height, stats.bits_per_sample, stats.input_size,
+        stats.input_format,
+        width,
+        height,
+        stats.bits_per_sample,
+        stats.input_size,
     );
 
-    println!(
+    tracing::info!(
         "{} to {} bytes ({})",
         if stats.is_transcoded {
             "Transcoded"
@@ -89,13 +128,13 @@ fn main() {
         },
     );
 
-    println!(
+    tracing::info!(
         "Reading input took {:.2} ms",
         stats.duration_read_image.as_secs_f64() * 1000.
     );
 
     if !stats.is_transcoded {
-        println!(
+        tracing::info!(
             "Decoding input took {:.2} ms",
             stats.duration_decode_image.as_secs_f64() * 1000.
         );
@@ -103,13 +142,13 @@ fn main() {
 
     let pixels = width as u64 * height as u64;
     let throughput_mp = pixels as f64 / (stats.duration_encode.as_secs_f64() * 1_000_000.);
-    println!(
+    tracing::info!(
         "Encoding took {:.2} ms ({throughput_mp:.3} MP/s)",
         stats.duration_encode.as_secs_f64() * 1000.
     );
 
     if args.output.is_some() {
-        println!(
+        tracing::info!(
             "Writing output took {:.2} ms",
             stats.duration_output.as_secs_f64() * 1000.
         );
@@ -130,6 +169,19 @@ fn encode_single(
         distance = 0.;
     }
     let is_modular = is_lossless || args.force_modular;
+
+    let span = tracing::info_span!(
+        "encode single image",
+        input = %input.as_ref().display(),
+        distance,
+        effort = effort as i64,
+    );
+    span.pb_set_message(&format!(
+        "Encoding {} (d{distance} e{})",
+        input.as_ref().display(),
+        effort as i64
+    ));
+    let _guard = span.entered();
 
     let begin_read_image = Instant::now();
     let input_buffer = std::fs::read(input).wrap_err("failed to read input")?;
@@ -207,8 +259,11 @@ fn encode_single(
         .wrap_err("failed to create frame settings")?;
 
     let mut transcoding_ok = false;
+    let frame_guard = tracing::info_span!("add frame").entered();
     let mut begin_encode = Instant::now();
     if do_transcode {
+        frame_guard.pb_set_message("Adding JPEG frame");
+
         begin_encode = Instant::now();
         let mut frame = encoder
             .add_frame(settings)
@@ -216,10 +271,15 @@ fn encode_single(
         let jpeg_result = frame.jpeg(&input_buffer);
 
         transcoding_ok = jpeg_result.is_ok();
+        if let Err(error) = jpeg_result {
+            tracing::warn!(%error, "JPEG transcoding failed, falling back to encoding pixels");
+        }
     }
 
     let mut duration_decode_image = Duration::default();
     if !transcoding_ok {
+        frame_guard.pb_set_message("Adding frame");
+
         let mut basic_info = jexcel::BasicInfo::new();
         basic_info.xsize = width;
         basic_info.ysize = height;
@@ -256,30 +316,38 @@ fn encode_single(
     }
 
     encoder.close_input();
+    frame_guard.exit();
 
-    let mut buffer = vec![0u8; 1024 * 1024];
-    let mut output = output
-        .map(|output| std::fs::File::create(output).wrap_err("failed to create output file"))
-        .transpose()?;
-    let mut output_size = 0u64;
-    let mut duration_output = Duration::default();
+    let encode_span = tracing::info_span!("encode");
+    encode_span.pb_set_message("Encoding frame");
 
-    loop {
-        let ret = encoder
-            .pull_outputs(&mut buffer)
-            .wrap_err("failed to get output data")?;
-        output_size += ret.bytes_written() as u64;
-        if let Some(output) = &mut output {
-            let begin = Instant::now();
-            output
-                .write_all(&buffer[..ret.bytes_written()])
-                .wrap_err("failed to write output")?;
-            duration_output += begin.elapsed();
+    let (output_size, duration_output) = encode_span.in_scope(|| -> eyre::Result<_> {
+        let mut buffer = vec![0u8; 1024 * 1024];
+        let mut output = output
+            .map(|output| std::fs::File::create(output).wrap_err("failed to create output file"))
+            .transpose()?;
+        let mut output_size = 0u64;
+        let mut duration_output = Duration::default();
+
+        loop {
+            let ret = encoder
+                .pull_outputs(&mut buffer)
+                .wrap_err("failed to get output data")?;
+            output_size += ret.bytes_written() as u64;
+            if let Some(output) = &mut output {
+                let begin = Instant::now();
+                output
+                    .write_all(&buffer[..ret.bytes_written()])
+                    .wrap_err("failed to write output")?;
+                duration_output += begin.elapsed();
+            }
+            if !ret.need_more_output() {
+                break;
+            }
         }
-        if !ret.need_more_output() {
-            break;
-        }
-    }
+
+        Ok((output_size, duration_output))
+    })?;
 
     let duration_encode_output = begin_encode.elapsed();
     let duration_encode = duration_encode_output - duration_output;

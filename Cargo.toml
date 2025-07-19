@@ -11,10 +11,14 @@ edition = "2024"
 
 [dependencies]
 bytemuck = "1.23.1"
+crossterm = "0.29.0"
 eyre = "0.6.12"
 globset = "0.4.16"
 rayon = "1.10.0"
 thiserror = "2.0.12"
+tracing = "0.1.41"
+tracing-indicatif = "0.3.11"
+tracing-subscriber = "0.3.19"
 walkdir = "2.5.0"
 
 [dependencies.clap]
