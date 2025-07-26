@@ -146,13 +146,13 @@ fn main() {
         });
         drop(span);
 
-        let span = tracing::info_span!("encode files");
-        span.pb_set_style(&ProgressStyle::default_bar());
-        span.pb_set_length(files.len() as u64);
-        let _guard = span.enter();
+        let parent_span = tracing::info_span!("encode files");
+        parent_span.pb_set_style(&ProgressStyle::default_bar());
+        parent_span.pb_set_length(files.len() as u64);
+        let _guard = parent_span.enter();
 
         files.into_par_iter().for_each(|path| {
-            let _guard = span.enter();
+            let _guard = parent_span.enter();
 
             let relpath = path
                 .strip_prefix(&args.input)
@@ -178,16 +178,23 @@ fn main() {
                 Err(err) => {
                     let path = output_path.as_ref().unwrap().display();
                     tracing::error!(%err, "Error creating output file \"{path}\"");
-                    span.pb_inc(1);
+                    parent_span.pb_inc(1);
                     return;
                 }
             };
+
+            let span = tracing::info_span!(
+                "encode single image",
+                input = %relpath.display(),
+            );
+            span.pb_set_message(&format!("Encoding {}", relpath.display()));
+            let _guard = span.entered();
 
             let stats = match encode_single(&path, file, &args) {
                 Ok(x) => x,
                 Err(err) => {
                     tracing::error!(%err, "Error encoding image \"{}\"", relpath.display());
-                    span.pb_inc(1);
+                    parent_span.pb_inc(1);
                     return;
                 }
             };
@@ -206,7 +213,7 @@ fn main() {
                 (stats.output_size * 8) as f64 / num_pixels as f64,
             );
 
-            span.pb_inc(1);
+            parent_span.pb_inc(1);
         });
     } else {
         let output = args
@@ -284,19 +291,6 @@ fn encode_single(
         distance = 0.;
     }
     let is_modular = is_lossless || args.force_modular;
-
-    let span = tracing::info_span!(
-        "encode single image",
-        input = %input.as_ref().display(),
-        distance,
-        effort = effort as i64,
-    );
-    span.pb_set_message(&format!(
-        "Encoding {} (d{distance} e{})",
-        input.as_ref().display(),
-        effort as i64
-    ));
-    let _guard = span.entered();
 
     let begin_read_image = Instant::now();
     let input_buffer = std::fs::read(input).wrap_err("failed to read input")?;
