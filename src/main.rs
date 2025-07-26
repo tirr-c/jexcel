@@ -1,3 +1,4 @@
+use std::fs::File;
 use std::io::IsTerminal;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
@@ -8,7 +9,8 @@ use crossterm::ExecutableCommand;
 use eyre::{Context, OptionExt};
 use image::ImageDecoder;
 use indicatif::{ProgressState, ProgressStyle};
-use tracing_indicatif::span_ext::IndicatifSpanExt as _;
+use rayon::prelude::*;
+use tracing_indicatif::span_ext::IndicatifSpanExt;
 
 #[derive(Debug, Parser)]
 #[command(version)]
@@ -101,63 +103,176 @@ fn main() {
     let args = Args::parse();
     init_subscriber(&args);
 
-    let stats = encode_single(&args.input, args.output.as_deref(), &args).unwrap();
+    if args.recursive {
+        let span = tracing::info_span!("collect files", input = %args.input.display());
+        span.pb_set_message("Collecting input files");
 
-    let (width, height) = stats.image_dimension;
-    tracing::info!(
-        "Input: {:?}, {} x {}, {} bpc, {} bytes",
-        stats.input_format,
-        width,
-        height,
-        stats.bits_per_sample,
-        stats.input_size,
-    );
+        let files = span.in_scope(|| {
+            let glob = globset::GlobSet::builder()
+                .add(globset::Glob::new("**/*.{png,jpg,jpeg,webp}").unwrap())
+                .build()
+                .expect("failed to compile globset");
 
-    tracing::info!(
-        "{} to {} bytes ({})",
-        if stats.is_transcoded {
-            "Transcoded"
-        } else {
-            "Encoded"
-        },
-        stats.output_size,
-        if stats.is_lossless {
-            "lossless"
-        } else {
-            "lossy"
-        },
-    );
+            walkdir::WalkDir::new(&args.input)
+                .into_iter()
+                .filter_map(|entry| {
+                    entry
+                        .inspect_err(|err| {
+                            tracing::error!(%err, "Error while traversing directory");
+                        })
+                        .ok()
+                })
+                .filter_map(|entry| {
+                    let file_type = entry.file_type();
+                    if file_type.is_symlink() {
+                        let path = entry.path();
+                        tracing::debug!("File \"{}\" is a symlink; not following", path.display());
+                        return None;
+                    }
 
-    tracing::info!(
-        "Reading input took {:.2} ms",
-        stats.duration_read_image.as_secs_f64() * 1000.
-    );
+                    if !entry.file_type().is_file() {
+                        return None;
+                    }
 
-    if !stats.is_transcoded {
+                    Some(entry.into_path())
+                })
+                .filter(|path| {
+                    let relpath = path
+                        .strip_prefix(&args.input)
+                        .expect("cannot strip prefix from input path");
+                    glob.is_match(relpath)
+                })
+                .collect::<Vec<_>>()
+        });
+        drop(span);
+
+        let span = tracing::info_span!("encode files");
+        span.pb_set_style(&ProgressStyle::default_bar());
+        span.pb_set_length(files.len() as u64);
+        let _guard = span.enter();
+
+        files.into_par_iter().for_each(|path| {
+            let _guard = span.enter();
+
+            let relpath = path
+                .strip_prefix(&args.input)
+                .expect("cannot strip prefix from input path");
+
+            let output_path = args
+                .output
+                .as_ref()
+                .map(|path| path.join(relpath).with_extension("jxl"));
+
+            let file = output_path
+                .as_ref()
+                .map(|output_path| {
+                    if let Some(parent) = output_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    File::create_new(output_path)
+                })
+                .transpose();
+
+            let file = match file {
+                Ok(x) => x,
+                Err(err) => {
+                    let path = output_path.as_ref().unwrap().display();
+                    tracing::error!(%err, "Error creating output file \"{path}\"");
+                    span.pb_inc(1);
+                    return;
+                }
+            };
+
+            let stats = match encode_single(&path, file, &args) {
+                Ok(x) => x,
+                Err(err) => {
+                    tracing::error!(%err, "Error encoding image \"{}\"", relpath.display());
+                    span.pb_inc(1);
+                    return;
+                }
+            };
+
+            let (width, height) = stats.image_dimension;
+            let num_pixels = width as u64 * height as u64;
+            tracing::info!(
+                "{}: {width} x {height}, {} to {} bytes ({:.2} bpp)",
+                relpath.display(),
+                if stats.is_transcoded {
+                    "transcoded"
+                } else {
+                    "encoded"
+                },
+                stats.output_size,
+                (stats.output_size * 8) as f64 / num_pixels as f64,
+            );
+
+            span.pb_inc(1);
+        });
+    } else {
+        let output = args
+            .output
+            .as_ref()
+            .map(|output| std::fs::File::create(output).wrap_err("failed to create output file"))
+            .transpose()
+            .unwrap();
+        let stats = encode_single(&args.input, output, &args).unwrap();
+
+        let (width, height) = stats.image_dimension;
         tracing::info!(
-            "Decoding input took {:.2} ms",
-            stats.duration_decode_image.as_secs_f64() * 1000.
+            "Input: {:?}, {} x {}, {} bpc, {} bytes",
+            stats.input_format,
+            width,
+            height,
+            stats.bits_per_sample,
+            stats.input_size,
         );
-    }
 
-    let pixels = width as u64 * height as u64;
-    let throughput_mp = pixels as f64 / (stats.duration_encode.as_secs_f64() * 1_000_000.);
-    tracing::info!(
-        "Encoding took {:.2} ms ({throughput_mp:.3} MP/s)",
-        stats.duration_encode.as_secs_f64() * 1000.
-    );
-
-    if args.output.is_some() {
         tracing::info!(
-            "Writing output took {:.2} ms",
-            stats.duration_output.as_secs_f64() * 1000.
+            "{} to {} bytes ({})",
+            if stats.is_transcoded {
+                "Transcoded"
+            } else {
+                "Encoded"
+            },
+            stats.output_size,
+            if stats.is_lossless {
+                "lossless"
+            } else {
+                "lossy"
+            },
         );
+
+        tracing::info!(
+            "Reading input took {:.2} ms",
+            stats.duration_read_image.as_secs_f64() * 1000.
+        );
+
+        if !stats.is_transcoded {
+            tracing::info!(
+                "Decoding input took {:.2} ms",
+                stats.duration_decode_image.as_secs_f64() * 1000.
+            );
+        }
+
+        let pixels = width as u64 * height as u64;
+        let throughput_mp = pixels as f64 / (stats.duration_encode.as_secs_f64() * 1_000_000.);
+        tracing::info!(
+            "Encoding took {:.2} ms ({throughput_mp:.3} MP/s)",
+            stats.duration_encode.as_secs_f64() * 1000.
+        );
+
+        if args.output.is_some() {
+            tracing::info!(
+                "Writing output took {:.2} ms",
+                stats.duration_output.as_secs_f64() * 1000.
+            );
+        }
     }
 }
 
 fn encode_single(
     input: impl AsRef<Path>,
-    output: Option<impl AsRef<Path>>,
+    mut output: Option<File>,
     args: &Args,
 ) -> eyre::Result<EncodingStats> {
     let mut distance = args
@@ -198,8 +313,9 @@ fn encode_single(
 
     let icc = image.icc_profile().wrap_err("failed to decode image")?;
     let (width, height) = image.dimensions();
-    let (num_channels, sample_format) = {
+    let (num_channels, sample_format, has_alpha) = {
         let color_type = image.color_type();
+        let has_alpha = color_type.has_alpha();
         let num_channels = color_type.channel_count() as u32;
         let sample_format = match color_type {
             image::ColorType::L8
@@ -213,7 +329,7 @@ fn encode_single(
             image::ColorType::Rgb32F | image::ColorType::Rgba32F => jexcel::SampleFormat::F32,
             _ => unimplemented!(),
         };
-        (num_channels, sample_format)
+        (num_channels, sample_format, has_alpha)
     };
     let bits_per_sample = {
         let color_type = image.original_color_type();
@@ -285,6 +401,12 @@ fn encode_single(
         basic_info.ysize = height;
         basic_info.bits_per_sample = bits_per_sample;
         basic_info.uses_original_profile = is_lossless as i32;
+        if has_alpha {
+            basic_info.num_extra_channels = 1;
+            basic_info.alpha_bits = bits_per_sample;
+            basic_info.alpha_premultiplied = 0;
+        }
+
         encoder
             .set_basic_info(&basic_info)
             .wrap_err("failed to set basic info")?;
@@ -323,9 +445,6 @@ fn encode_single(
 
     let (output_size, duration_output) = encode_span.in_scope(|| -> eyre::Result<_> {
         let mut buffer = vec![0u8; 1024 * 1024];
-        let mut output = output
-            .map(|output| std::fs::File::create(output).wrap_err("failed to create output file"))
-            .transpose()?;
         let mut output_size = 0u64;
         let mut duration_output = Duration::default();
 
