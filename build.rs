@@ -6,6 +6,7 @@ fn main() {
     }
 
     jpegxl_src::build();
+    println!("cargo::rerun-if-changed=.git/modules/libjxl/HEAD");
 
     let out_path = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     let include_path = out_path.join("include");
