@@ -1,7 +1,10 @@
 use std::fs::File;
+use std::io::ErrorKind;
 use std::io::IsTerminal;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
@@ -50,6 +53,8 @@ struct Args {
     force_from_pixels: bool,
     #[arg(short, long)]
     recursive: bool,
+    #[arg(short = 'f', long)]
+    overwrite: bool,
     /// Input file name.
     input: PathBuf,
 }
@@ -90,8 +95,10 @@ fn init_subscriber(_args: &Args) {
             },
         );
     let indicatif_layer = tracing_indicatif::IndicatifLayer::new().with_progress_style(style);
-    let fmt_layer =
-        tracing_subscriber::fmt::layer().with_writer(indicatif_layer.get_stderr_writer());
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_writer(indicatif_layer.get_stderr_writer())
+        .with_ansi(is_terminal)
+        .without_time();
 
     tracing_subscriber::registry()
         .with(fmt_layer)
@@ -113,7 +120,7 @@ fn main() {
                 .build()
                 .expect("failed to compile globset");
 
-            walkdir::WalkDir::new(&args.input)
+            let files = walkdir::WalkDir::new(&args.input)
                 .into_iter()
                 .filter_map(|entry| {
                     entry
@@ -142,8 +149,16 @@ fn main() {
                         .expect("cannot strip prefix from input path");
                     glob.is_match(relpath)
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            tracing::info!(
+                "Collected {} file{}",
+                files.len(),
+                if files.len() == 1 { "" } else { "s" },
+            );
+            files
         });
+
+        let num_files = files.len();
         drop(span);
 
         let parent_span = tracing::info_span!("encode files");
@@ -151,6 +166,8 @@ fn main() {
         parent_span.pb_set_length(files.len() as u64);
         let _guard = parent_span.enter();
 
+        let num_success = AtomicUsize::new(0);
+        let num_transcoded = AtomicUsize::new(0);
         files.into_par_iter().for_each(|path| {
             let _guard = parent_span.enter();
 
@@ -163,25 +180,21 @@ fn main() {
                 .as_ref()
                 .map(|path| path.join(relpath).with_extension("jxl"));
 
-            let file = output_path
-                .as_ref()
-                .map(|output_path| {
-                    if let Some(parent) = output_path.parent() {
-                        std::fs::create_dir_all(parent)?;
+            if let Some(path) = &output_path {
+                if let Some(parent) = path.parent() {
+                    if let Err(err) = std::fs::create_dir_all(parent) {
+                        tracing::error!(%err, "Error creating directories for \"{}\"", relpath.display());
+                        parent_span.pb_inc(1);
+                        return;
                     }
-                    File::create_new(output_path)
-                })
-                .transpose();
+                }
 
-            let file = match file {
-                Ok(x) => x,
-                Err(err) => {
-                    let path = output_path.as_ref().unwrap().display();
-                    tracing::error!(%err, "Error creating output file \"{path}\"");
+                if let Err(err) = ensure_file_inexist(path, args.overwrite) {
+                    tracing::error!(%err, "Error checking path \"{}\"", relpath.display());
                     parent_span.pb_inc(1);
                     return;
                 }
-            };
+            }
 
             let span = tracing::info_span!(
                 "encode single image",
@@ -190,7 +203,7 @@ fn main() {
             span.pb_set_message(&format!("Encoding {}", relpath.display()));
             let _guard = span.entered();
 
-            let stats = match encode_single(&path, file, &args) {
+            let stats = match encode_single(&path, output_path, &args) {
                 Ok(x) => x,
                 Err(err) => {
                     tracing::error!(%err, "Error encoding image \"{}\"", relpath.display());
@@ -213,16 +226,41 @@ fn main() {
                 (stats.output_size * 8) as f64 / num_pixels as f64,
             );
 
+            num_success.fetch_add(1, Ordering::Relaxed);
+            if stats.is_transcoded {
+                num_transcoded.fetch_add(1, Ordering::Relaxed);
+            }
             parent_span.pb_inc(1);
         });
+
+        let num_success = num_success.into_inner();
+        let num_transcoded = num_transcoded.into_inner();
+        let num_failure = num_files - num_success;
+        tracing::info!(
+            "{num_success} successful ({num_transcoded} losslessly transcoded), {num_failure} failures",
+        );
+        if num_failure > 0 {
+            tracing::warn!("Recursive encoding had some failures");
+        }
     } else {
-        let output = args
-            .output
-            .as_ref()
-            .map(|output| std::fs::File::create(output).wrap_err("failed to create output file"))
-            .transpose()
-            .unwrap();
-        let stats = encode_single(&args.input, output, &args).unwrap();
+        if let Some(path) = &args.output {
+            if let Err(err) = ensure_file_inexist(path, args.overwrite) {
+                tracing::error!(%err, "Error checking path \"{}\"", path.display());
+                return;
+            }
+        }
+
+        let stats = match encode_single(&args.input, args.output.as_ref(), &args) {
+            Ok(x) => x,
+            Err(err) => {
+                if let Some(path) = &args.output {
+                    tracing::error!(%err, "Error encoding image \"{}\"", path.display());
+                } else {
+                    tracing::error!(%err, "Error encoding image");
+                }
+                return;
+            }
+        };
 
         let (width, height) = stats.image_dimension;
         tracing::info!(
@@ -277,9 +315,39 @@ fn main() {
     }
 }
 
+fn ensure_file_inexist(path: impl AsRef<Path>, overwrite: bool) -> eyre::Result<()> {
+    let meta = std::fs::symlink_metadata(path);
+    let meta = match meta {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+
+    if meta.is_dir() {
+        let err = std::io::Error::from(ErrorKind::IsADirectory);
+        return Err(err.into());
+    }
+
+    if !overwrite {
+        let err = std::io::Error::from(ErrorKind::AlreadyExists);
+        return Err(err.into());
+    }
+
+    if meta.is_symlink() {
+        eyre::bail!("cannot overwrite symlink");
+    }
+
+    if meta.permissions().readonly() {
+        let err = std::io::Error::from(ErrorKind::PermissionDenied);
+        return Err(err.into());
+    }
+
+    Ok(())
+}
+
 fn encode_single(
     input: impl AsRef<Path>,
-    mut output: Option<File>,
+    output_path: Option<impl AsRef<Path>>,
     args: &Args,
 ) -> eyre::Result<EncodingStats> {
     let mut distance = args
@@ -433,6 +501,17 @@ fn encode_single(
 
     encoder.close_input();
     frame_guard.exit();
+
+    let mut output = output_path
+        .map(|path| {
+            let path = path.as_ref();
+            if args.overwrite {
+                File::create(path)
+            } else {
+                File::create_new(path)
+            }
+        })
+        .transpose()?;
 
     let encode_span = tracing::info_span!("encode");
     encode_span.pb_set_message("Encoding frame");
