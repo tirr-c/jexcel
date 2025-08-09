@@ -35,6 +35,14 @@ impl Error {
             })
         }
     }
+
+    pub(crate) fn try_from_libjxl_decoder(ret: sys::JxlDecoderStatus) -> Result<(), Self> {
+        Err(match ret {
+            sys::JxlDecoderStatus_JXL_DEC_SUCCESS => return Ok(()),
+            // TODO
+            _ => Self::Unknown,
+        })
+    }
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

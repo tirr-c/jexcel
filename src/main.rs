@@ -55,6 +55,8 @@ struct Args {
     recursive: bool,
     #[arg(short = 'f', long)]
     overwrite: bool,
+    #[arg(long)]
+    verify: bool,
     /// Input file name.
     input: PathBuf,
 }
@@ -373,6 +375,11 @@ fn encode_single(
     let do_transcode = is_jpeg && !args.force_from_pixels;
     let mut image = image.into_decoder().wrap_err("failed to parse image")?;
 
+    let mut do_verify = args.verify;
+    if !is_lossless && !do_transcode {
+        do_verify = false;
+    }
+
     let icc = image.icc_profile().wrap_err("failed to decode image")?;
     let (width, height) = image.dimensions();
     let (num_channels, sample_format, has_alpha) = {
@@ -441,6 +448,7 @@ fn encode_single(
     let mut begin_encode = Instant::now();
     if do_transcode {
         frame_guard.pb_set_message("Adding JPEG frame");
+        encoder.set_jpeg_reconstruction(true)?;
 
         begin_encode = Instant::now();
         let mut frame = encoder
@@ -451,12 +459,18 @@ fn encode_single(
         transcoding_ok = jpeg_result.is_ok();
         if let Err(error) = jpeg_result {
             tracing::warn!(%error, "JPEG transcoding failed, falling back to encoding pixels");
+
+            if !is_lossless {
+                do_verify = false;
+            }
         }
     }
 
     let mut duration_decode_image = Duration::default();
+    let mut image_buffer = Vec::new();
     if !transcoding_ok {
         frame_guard.pb_set_message("Adding frame");
+        encoder.set_jpeg_reconstruction(false)?;
 
         let mut basic_info = jexcel::BasicInfo::new();
         basic_info.xsize = width;
@@ -485,9 +499,9 @@ fn encode_single(
         }
 
         let begin_decode_image = Instant::now();
-        let mut buffer = vec![0u8; image.total_bytes() as usize];
+        image_buffer = vec![0u8; image.total_bytes() as usize];
         image
-            .read_image(&mut buffer)
+            .read_image(&mut image_buffer)
             .wrap_err("failed to decode input image")?;
         duration_decode_image = begin_decode_image.elapsed();
 
@@ -495,8 +509,12 @@ fn encode_single(
         encoder
             .add_frame(settings)
             .wrap_err("failed to add image frame")?
-            .color_channels(num_channels, sample_format, &buffer)
+            .color_channels(num_channels, sample_format, &image_buffer)
             .wrap_err("failed to set image buffer")?;
+
+        if !do_verify {
+            image_buffer = Vec::new();
+        }
     }
 
     encoder.close_input();
@@ -512,6 +530,7 @@ fn encode_single(
             }
         })
         .transpose()?;
+    let mut output_buffer = do_verify.then(Vec::new);
 
     let encode_span = tracing::info_span!("encode");
     encode_span.pb_set_message("Encoding frame");
@@ -533,6 +552,9 @@ fn encode_single(
                     .wrap_err("failed to write output")?;
                 duration_output += begin.elapsed();
             }
+            if let Some(output_buffer) = &mut output_buffer {
+                output_buffer.extend_from_slice(&buffer[..ret.bytes_written()]);
+            }
             if !ret.need_more_output() {
                 break;
             }
@@ -540,9 +562,34 @@ fn encode_single(
 
         Ok((output_size, duration_output))
     })?;
+    drop(encode_span);
 
     let duration_encode_output = begin_encode.elapsed();
     let duration_encode = duration_encode_output - duration_output;
+
+    if let Some(output_buffer) = output_buffer {
+        let span = tracing::info_span!("verify");
+        span.pb_set_message("Verifying encoded image");
+        let result = span.in_scope(|| {
+            let input_buffer = if transcoding_ok {
+                &input_buffer
+            } else {
+                &image_buffer
+            };
+            verify_single(
+                input_buffer,
+                &output_buffer,
+                transcoding_ok,
+                num_channels,
+                sample_format,
+            )
+        });
+
+        if let Err(err) = result {
+            tracing::error!(%err, "Encoding verification failed");
+            return Err(err);
+        }
+    }
 
     Ok(EncodingStats {
         input_format: format.unwrap(),
@@ -557,4 +604,28 @@ fn encode_single(
         duration_encode,
         duration_output,
     })
+}
+
+fn verify_single(
+    input_buffer: &[u8],
+    output_buffer: &[u8],
+    is_transcoded: bool,
+    num_channels: u32,
+    sample_format: jexcel::SampleFormat,
+) -> eyre::Result<()> {
+    let mut decoder = jexcel::JxlDecoder::new().ok_or_eyre("cannot create decoder")?;
+
+    if is_transcoded {
+        let output_jpeg = decoder.decode_to_jpeg(output_buffer)?;
+        if input_buffer != output_jpeg {
+            eyre::bail!("JPEG bitstream mismatch");
+        }
+    } else {
+        let output_image = decoder.decode_to_pixels(output_buffer, num_channels, sample_format)?;
+        if input_buffer != output_image {
+            eyre::bail!("output pixel mismatch");
+        }
+    }
+
+    Ok(())
 }
